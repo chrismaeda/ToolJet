@@ -5,6 +5,8 @@ import { MigrationProgress, processDataInBatches } from 'src/helpers/utils.helpe
 
 export class UpdateInternalTablesConfigurationsColumn1718542399701 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    if (process.env.ENABLE_TOOLJET_DB !== 'true') return;
+
     const tooljetDbConnection = new DataSource({
       ...tooljetDbOrmconfig,
       name: 'tooljetDbMigration',
