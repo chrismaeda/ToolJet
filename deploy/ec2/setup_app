@@ -8,7 +8,17 @@ fi
 
 export $(grep -v '^#' .env | xargs)
 
-if psql -d postgresql://$PG_USER:$PG_PASS@$PG_HOST/postgres -c 'select now()' > /dev/null 2>&1
+# Ping the server's "postgres" database, since the app database may not exist yet
+if [ -n "$DATABASE_URL" ]
+then
+  DB_URL_NO_QUERY="${DATABASE_URL%%\?*}"
+  DB_URL_QUERY="${DATABASE_URL#"$DB_URL_NO_QUERY"}"
+  DB_PING_URL="${DB_URL_NO_QUERY%/*}/postgres${DB_URL_QUERY}"
+else
+  DB_PING_URL="postgresql://$PG_USER:$PG_PASS@$PG_HOST:${PG_PORT:-5432}/postgres"
+fi
+
+if psql -d "$DB_PING_URL" -c 'select now()' > /dev/null 2>&1
 then
   echo "Successfully pinged the database!";
 else
@@ -24,7 +34,7 @@ else
   exit 1
 fi
 
-if $ENABLE_TOOLJET_DB == "true"
+if [ "$ENABLE_TOOLJET_DB" == "true" ]
 then
     if sudo systemctl start postgrest
     then
@@ -35,7 +45,11 @@ then
     fi
 fi
 
-npm --prefix server run db:setup:prod
+if ! npm --prefix server run db:setup:prod
+then
+  echo "Database setup failed!"
+  exit 1
+fi
 
 if sudo systemctl start nest
 then
