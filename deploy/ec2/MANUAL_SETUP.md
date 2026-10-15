@@ -27,7 +27,7 @@ setup using OpenResty; this document is the manual equivalent.
 
 - PostgreSQL 16, 17 or 18 (tested on 18)
 - A user that can create databases (the RDS master user works), or a
-  pre-created database (see `PG_DB_OWNER` below)
+  pre-created database owned by the ToolJet user (see step 6)
 - The database's security group must allow 5432 from the VM
 - RDS for PostgreSQL 15+ requires SSL by default. ToolJet only uses SSL when
   the connection is given as `DATABASE_URL`, so use that (step 4).
@@ -111,9 +111,9 @@ Notes:
   Avoid `$` and spaces in values; this file is also read by bash and systemd.
 - If the database port isn't 5432, also set `PG_PORT=<port>`. The database
   setup scripts ignore the port in `DATABASE_URL`.
-- If the database user can't create databases, create `tooljet_production`
-  yourself, run `CREATE EXTENSION pgcrypto; CREATE EXTENSION citext;` in it,
-  and add `PG_DB_OWNER=false`.
+- If you created the database yourself, or the database user can't create
+  databases, add `PG_DB_OWNER=false` and follow "Using a pre-created
+  database" in step 6.
 - Optional: `SMTP_*` and `DEFAULT_FROM_EMAIL` for invite and password-reset
   emails, `DISABLE_SIGNUPS`, `USER_SESSION_EXPIRY` (minutes). See
   `.env.example` for more.
@@ -144,6 +144,44 @@ npm run db:setup:prod
 You should see `Created database tooljet_production` (or that it already
 exists), followed by the migrations running. It finishes with the last
 migration's `executed successfully` message.
+
+### Using a pre-created database
+
+If the database already exists, or the ToolJet user can't create databases,
+create and prepare it as an admin (e.g. the RDS master user), then run only
+the migrations.
+
+1. As the admin, create the database and give it to the ToolJet user.
+   PostgreSQL 15+ only lets the owner of the `public` schema create tables
+   in it, so transfer that too:
+
+   ```sql
+   CREATE DATABASE tooljet_production;
+   ALTER DATABASE tooljet_production OWNER TO <tooljet_user>;
+   \c tooljet_production
+   ALTER SCHEMA public OWNER TO <tooljet_user>;
+   CREATE EXTENSION IF NOT EXISTS pgcrypto;
+   CREATE EXTENSION IF NOT EXISTS citext;
+   ```
+
+   On RDS, if `ALTER ... OWNER TO` fails with `must be able to SET ROLE`,
+   first run `GRANT <tooljet_user> TO <master_user>;`.
+
+2. Add `PG_DB_OWNER=false` to `.env`. Without it, the setup scripts run
+   `createdb` and fail when the ToolJet user lacks permission to create
+   databases. It also skips creating `pgcrypto` in the migrations, which is
+   why step 1 creates it.
+
+3. Run the migrations:
+
+   ```bash
+   cd ~/app
+   set -a; source .env; set +a
+   npm run db:migrate:prod
+   ```
+
+   With `PG_DB_OWNER=false`, `npm run db:setup:prod` also works; it skips
+   database creation and runs the same migrations.
 
 ## 7. Run as a systemd service
 
@@ -247,6 +285,8 @@ Take an RDS snapshot before upgrading.
 |---|---|
 | `no pg_hba.conf entry ... no encryption` | The server is connecting without SSL. Use `DATABASE_URL` instead of `PG_HOST`/`PG_USER`/`PG_PASS`. |
 | `createdb: ... port 5432 failed` on a non-5432 database | Set `PG_PORT`; the setup scripts ignore the port in `DATABASE_URL`. |
+| `createdb: ... permission denied to create database` | The database user can't create databases. Pre-create the database and set `PG_DB_OWNER=false` (step 6, "Using a pre-created database"). |
+| `permission denied for schema public` during migrations | The ToolJet user doesn't own the database's `public` schema (PostgreSQL 15+). Run `ALTER SCHEMA public OWNER TO <tooljet_user>;` in `tooljet_production` (step 6). |
 | `Unsupported engine` / `EBADENGINE` during `npm install` | Node or npm is older than 18.18.2 / 9.8.1. Run `nvm use` in the repo. |
 | Build killed / `heap out of memory` | Not enough RAM. Add swap or use a larger instance. |
 | Pages load but editing or live updates don't work | The proxy isn't passing WebSocket upgrades for `/ws` and `/yjs`. |
