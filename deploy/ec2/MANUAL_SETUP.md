@@ -7,8 +7,8 @@ This setup assumes:
 
 - ToolJet Database is **off** (`ENABLE_TOOLJET_DB=false`), so no PostgREST
 - Sign-in is by password and/or Google SSO
-- The app runs as a systemd service on port 3000 behind a reverse proxy that
-  terminates TLS
+- The app runs as a systemd service on port 3000 behind a reverse proxy or
+  Cloudflare Tunnel that terminates TLS
 
 The Packer/AMI flow (`setup_machine.sh` + `setup_app`) automates a similar
 setup using OpenResty; this document is the manual equivalent.
@@ -21,7 +21,9 @@ setup using OpenResty; this document is the manual equivalent.
 - At least 2 vCPU and 4 GB RAM. The frontend build is the memory-heavy
   step; if it gets killed, add swap or build on a larger instance.
 - 20 GB disk (dependencies and build output take several GB)
-- Security group: inbound 22 (SSH), 80 and 443 (HTTP/HTTPS)
+- Security group: inbound 22 (SSH), plus 80 and 443 (HTTP/HTTPS) unless
+  you use a Cloudflare Tunnel (step 8, option C), which needs no inbound
+  ports
 
 **Database**
 
@@ -35,7 +37,8 @@ setup using OpenResty; this document is the manual equivalent.
 **DNS**
 
 - A hostname (e.g. `tooljet.example.com`) pointing at the VM or its load
-  balancer
+  balancer. With a Cloudflare Tunnel, Cloudflare creates the record when you
+  add the route.
 
 ## 1. Clone the repo
 
@@ -56,6 +59,7 @@ sudo apt-get install -y git curl build-essential python3 postgresql-client nginx
 - `postgresql-client` provides `createdb`, which `db:setup:prod` uses
 - `build-essential` and `python3` let native modules compile from source if a
   prebuilt binary isn't available
+- `nginx` is only needed for step 8, option B; leave it out otherwise
 
 ## 3. Install Node.js 24
 
@@ -241,7 +245,50 @@ sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d tooljet.example.com
 ```
 
-With either option, WebSocket upgrades must reach the server. The server
+**Option C: Cloudflare Tunnel.** `cloudflared` on the VM opens an outbound
+connection to Cloudflare, which serves HTTPS for the hostname. The VM needs
+no inbound ports apart from SSH, and no reverse proxy: point the tunnel
+straight at the server.
+
+1. In Cloudflare Zero Trust, go to **Networks → Tunnels** and create a tunnel
+   (type *Cloudflared*), or open an existing one for this VM.
+2. If `cloudflared` isn't on the VM yet, run the install command the
+   dashboard shows for Debian. It installs the package and runs
+   `sudo cloudflared service install <token>`, which sets it up as a systemd
+   service that starts on boot.
+3. Under **Public Hostnames**, add the ToolJet hostname with service type
+   **HTTP** and URL **`localhost:3000`**. Use HTTP, not HTTPS: the server
+   serves plain HTTP and Cloudflare handles TLS. WebSockets need no extra
+   settings.
+
+Check it:
+
+```bash
+systemctl is-enabled cloudflared nest      # both "enabled"
+journalctl -u cloudflared | grep -E 'Registered tunnel|Updated to new configuration'
+```
+
+The configuration line should list the ToolJet hostname with
+`http://localhost:3000`.
+
+Notes:
+
+- **Use a hostname one level below the zone**, e.g. `tooljet-stg.example.com`,
+  not `tooljet.stg.example.com`. Cloudflare's free certificate covers only
+  `example.com` and `*.example.com`; a deeper name fails with
+  `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` unless you buy Advanced Certificate
+  Manager.
+- `TOOLJET_HOST` must be the tunnel hostname, e.g.
+  `https://tooljet-stg.example.com`.
+- If a Cloudflare Access policy covers the hostname, users sign in to Access
+  before reaching ToolJet. Browser sign-in, including ToolJet's Google
+  sign-in, still works; server-to-server calls to the ToolJet API (e.g.
+  webhooks) need an Access service token or a bypass policy.
+- Cloudflare limits request bodies to 100 MB on Free and Pro plans.
+- Close 80, 443 and 3000 in the security group. You can also reach SSH
+  through the tunnel and close 22.
+
+With any option, WebSocket upgrades must reach the server. The server
 uses `/ws` for realtime events and `/yjs` for multiplayer editing.
 
 ## 9. Create the first admin
@@ -290,4 +337,7 @@ Take an RDS snapshot before upgrading.
 | `Unsupported engine` / `EBADENGINE` during `npm install` | Node or npm is older than 18.18.2 / 9.8.1. Run `nvm use` in the repo. |
 | Build killed / `heap out of memory` | Not enough RAM. Add swap or use a larger instance. |
 | Pages load but editing or live updates don't work | The proxy isn't passing WebSocket upgrades for `/ws` and `/yjs`. |
+| `ERR_SSL_VERSION_OR_CIPHER_MISMATCH` through a Cloudflare Tunnel | The hostname is two levels below the zone (e.g. `tooljet.stg.example.com`), which Cloudflare's free certificate doesn't cover. Use a one-level name like `tooljet-stg.example.com` (step 8, option C). |
+| Every request redirects to `<team>.cloudflareaccess.com` | A Cloudflare Access policy covers the hostname. Sign in to Access in the browser; for API callers, use a service token or bypass policy. |
+| Cloudflare `502 Bad Gateway` through the tunnel | The server isn't up yet (it takes ~30 s after boot) or the route's service isn't `http://localhost:3000`. Check `journalctl -u nest` and the tunnel's public hostname. |
 | Google sign-in fails with `redirect_uri_mismatch` | The redirect URL in Google doesn't exactly match `<TOOLJET_HOST>/sso/google/<config-id>`. |
