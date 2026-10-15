@@ -160,7 +160,8 @@ the migrations.
    in it, so transfer that too:
 
    ```sql
-   CREATE DATABASE tooljet_production;
+   CREATE USER <tooljet_user> WITH ENCRYPTED PASSWORD 'XXXXX';
+   CREATE DATABASE tooljet_production LC_COLLATE "en_US.UTF-8" LC_CTYPE "en_US.UTF-8" TEMPLATE template0;
    ALTER DATABASE tooljet_production OWNER TO <tooljet_user>;
    \c tooljet_production
    ALTER SCHEMA public OWNER TO <tooljet_user>;
